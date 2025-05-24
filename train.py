@@ -9,7 +9,6 @@ import time
 from model import Network
 import matplotlib.pyplot as plt
 
-
 matplotlib.use('TkAgg')
 plt.rcParams['font.family'] = 'serif'
 plt.rcParams['font.serif'] = ['Times New Roman'] + plt.rcParams['font.serif']
@@ -31,11 +30,19 @@ class PhysicsLoss(nn.Module):
 
         return grad * self.y_std[y_index] / self.x_std[x_index] ** order
 
-    def forward(self, model, x_norm, nu, reduction='none'):
+    def forward(self, model, x_norm, nu, density, reduction='none'):
         out = model(x_norm)
         u_n, v_n, w_n, p_n = out[:, 0:1], out[:, 1:2], out[:, 2:3], out[:, 3:4]
         du_dx = self.gradient(u_n, x_norm, 1, 0, 0)
+        du_dy = self.gradient(u_n, x_norm, 1, 0, 1)
+        du_dz = self.gradient(u_n, x_norm, 1, 0, 2)
+
+        dv_dx = self.gradient(v_n, x_norm, 1, 1, 0)
         dv_dy = self.gradient(v_n, x_norm, 1, 1, 1)
+        dv_dz = self.gradient(v_n, x_norm, 1, 1, 2)
+
+        dw_dx = self.gradient(w_n, x_norm, 1, 2, 0)
+        dw_dy = self.gradient(w_n, x_norm, 1, 2, 1)
         dw_dz = self.gradient(w_n, x_norm, 1, 2, 2)
         continuity = du_dx + dv_dy + dw_dz
 
@@ -58,9 +65,9 @@ class PhysicsLoss(nn.Module):
         lap_u = d2u_dx2 + d2u_dy2 + d2u_dz2
         lap_v = d2v_dx2 + d2v_dy2 + d2v_dz2
         lap_w = d2w_dx2 + d2w_dy2 + d2w_dz2
-        momentum_x = dp_dx - nu * lap_u
-        momentum_y = dp_dy - nu * lap_v
-        momentum_z = dp_dz - nu * lap_w
+        momentum_x = density * (u_n * du_dx + v_n * du_dy + w_n * du_dz) + dp_dx - nu * lap_u
+        momentum_y = density * (u_n * dv_dx + v_n * dv_dy + w_n * dv_dz) + dp_dy - nu * lap_v
+        momentum_z = density * (u_n * dw_dx + v_n * dw_dy + w_n * dw_dz) + dp_dz - nu * lap_w
 
         loss_fn = nn.MSELoss(reduction='none')
         loss_continuity = loss_fn(continuity, torch.zeros_like(continuity))
@@ -135,25 +142,11 @@ def load_data(file_name):
     boundary_data = data[boundary_mask]
     internal_data = data[internal_mask]
 
-    num_obs = max(1, int(len(internal_data) * 0.05))
+    num_obs = max(1, int(len(internal_data) * 0.01))
     coords = torch.tensor(internal_data[:, :3], dtype=torch.float32)
     fps_idx = farthest_point_sampling(coords, num_obs)
     obs_data = internal_data[fps_idx.numpy()]
     domain_data = calArray2dDiff(internal_data, obs_data)
-    # plotter = pv.Plotter()
-    # if boundary_data.size > 0:
-    #     plotter.add_points(boundary_data[:, :3], color='gray', render_points_as_spheres=True, point_size=4)
-    #
-    # if obs_data.size > 0:
-    #     plotter.add_points(obs_data[:, :3], color='yellow', render_points_as_spheres=True, point_size=4)
-    #
-    # if domain_data.size > 0:
-    #     plotter.add_points(domain_data[:,:3], color='gray', render_points_as_spheres=True, point_size=4)
-    #
-    # plotter.set_background('white')
-    # plotter.window_size = [800, 600]
-    #
-    # plotter.show()
     print('loading finished')
     return obs_data, domain_data, boundary_data
 
@@ -191,8 +184,8 @@ if __name__ == '__main__':
     phy_loss = PhysicsLoss(x_std=X_std.to(device), y_std=Y_std.to(device))
     optimizer = optim.Adam(model.parameters(), lr=0.01)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
-                                                     'min', factor=0.5, patience=1000,verbose=True,
-                                                       min_lr=min_lr)
+                                                     'min', factor=0.5, patience=1000, verbose=True,
+                                                     min_lr=min_lr)
     epochs = 80000
     target_loss = 1e-6
     best_mse = float('inf')
@@ -216,10 +209,10 @@ if __name__ == '__main__':
                 xbc_batch = next(bc_iter)[0].to(device)
 
             optimizer.zero_grad()
-            w_p = 1 + (epoch / 20000) * 99 if epoch < 20000 else 100
+            w_p = 1 + (epoch / 5000) * 99 if epoch < 5000 else 100
             loss, loss_data, loss_bc, loss_pde = compute_losses(
                 model, phy_loss, xob_batch, xbc_batch, xdomain_batch, yob_batch,
-                nu=1e-3, device=device, w_pde=w_p, reduction='mean')
+                nu=1e-3, density=1e+3, device=device, w_pde=w_p, reduction='mean')
 
             loss.backward(retain_graph=True)
             optimizer.step()
@@ -231,13 +224,13 @@ if __name__ == '__main__':
         scheduler.step(epoch_loss)
         loss_history.append([epoch, epoch_loss, epoch_data_loss, epoch_bc_loss, epoch_pde_loss])
         # ---- 每1000轮进行 PDF-RBA 重采样 ----
-        if epoch > 20000 and epoch % 1000 == 0:
+        if epoch > 0 and epoch % 1000 == 0:
             model.eval()
 
             all_residuals = []
             for xdomain_batch in domain_loader:
                 xdomain_batch = xdomain_batch[0].to(device)
-                loss_pde = phy_loss(model, xdomain_batch, nu=1e-3, reduction='none')
+                loss_pde = phy_loss(model, xdomain_batch, nu=1e-3, density=1e+3, reduction='none')
                 all_residuals.append(loss_pde.detach().cpu().numpy())
 
             residuals = np.concatenate(all_residuals)
