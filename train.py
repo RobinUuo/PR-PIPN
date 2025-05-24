@@ -26,7 +26,7 @@ class PhysicsLoss(nn.Module):
         for _ in range(order):
             grads = torch.autograd.grad(grad, x_norm, grad_outputs=torch.ones_like(grad),
                                         create_graph=True, retain_graph=True)[0]
-            grad = grads[..., x_index]
+            grad = grads[..., x_index].unsqueeze(1)
 
         return grad * self.y_std[y_index] / self.x_std[x_index] ** order
 
@@ -69,18 +69,17 @@ class PhysicsLoss(nn.Module):
         momentum_y = density * (u_n * dv_dx + v_n * dv_dy + w_n * dv_dz) + dp_dy - nu * lap_v
         momentum_z = density * (u_n * dw_dx + v_n * dw_dy + w_n * dw_dz) + dp_dz - nu * lap_w
 
-        loss_fn = nn.MSELoss(reduction='none')
-        loss_continuity = loss_fn(continuity, torch.zeros_like(continuity))
-        loss_momentum_x = loss_fn(momentum_x, torch.zeros_like(momentum_x))
-        loss_momentum_y = loss_fn(momentum_y, torch.zeros_like(momentum_y))
-        loss_momentum_z = loss_fn(momentum_z, torch.zeros_like(momentum_z))
+        loss_continuity = (continuity ** 2).squeeze()
+        loss_momentum_x = (momentum_x ** 2).squeeze()
+        loss_momentum_y = (momentum_y ** 2).squeeze()
+        loss_momentum_z = (momentum_z ** 2).squeeze()
 
         phy_loss_per_sample = loss_continuity + loss_momentum_x + loss_momentum_y + loss_momentum_z
 
         if reduction == 'mean':
             return phy_loss_per_sample.mean()
         elif reduction == 'none':
-            return phy_loss_per_sample.squeeze()  # 从 [B,1] 转换为 [B]
+            return phy_loss_per_sample  # 从 [B,1] 转换为 [B]
         else:
             raise ValueError(f"Invalid reduction mode: {reduction}")
 
