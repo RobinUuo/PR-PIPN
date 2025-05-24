@@ -87,7 +87,7 @@ class PhysicsLoss(nn.Module):
 
 def compute_losses(model, phy_loss_fn,
                    xob_batch, xbc_batch, xdomain_batch, yob_batch,
-                   nu, device, w_data=100, w_bc=1, w_pde=1, reduction='mean'):
+                   nu, density, device, w_data=100, w_bc=1, w_pde=1, reduction='mean'):
     xob_batch = xob_batch.to(device)
     xbc_batch = xbc_batch.to(device)
     xdomain_batch = xdomain_batch.to(device)
@@ -102,7 +102,7 @@ def compute_losses(model, phy_loss_fn,
 
     loss_data = torch.mean(torch.sum((pred_ob - yob_batch) ** 2, dim=1))
     loss_bc = torch.mean(torch.sum((pred_bc[:, :3] - ybc_n) ** 2, dim=1))
-    loss_pde = phy_loss_fn(model, xdomain_batch, nu, reduction)
+    loss_pde = phy_loss_fn(model, xdomain_batch, nu, density, reduction)
 
     total_loss = w_data * loss_data + w_bc * loss_bc + w_pde * loss_pde
     return total_loss, loss_data, loss_bc, loss_pde
@@ -186,7 +186,7 @@ if __name__ == '__main__':
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                      'min', factor=0.5, patience=1000, verbose=True,
                                                      min_lr=min_lr)
-    epochs = 80000
+    epochs = 50000
     target_loss = 1e-6
     best_mse = float('inf')
     loss_history = []
